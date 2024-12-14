@@ -10,13 +10,13 @@ use crossterm::{
 };
 use error::{KanaError, Result};
 use ratatui::{backend::CrosstermBackend, Terminal};
-use std::fs::{File, OpenOptions};
+use std::{env, fs::{File, OpenOptions}};
 use std::path::Path;
 use std::{
     io,
     time::{Duration, Instant},
 };
-use types::{AppMode, UserHistory};
+use types::{AppMode, PracticeMode, UserHistory};
 
 use tracing::{debug, error, info, warn};
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
@@ -59,6 +59,62 @@ fn setup_logging() -> Result<()> {
     
     Ok(())
 }
+
+fn parse_practice_mode(arg: &str) -> Option<PracticeMode> {
+    // Remove leading dashes
+    let arg = arg.trim_start_matches('-');
+    
+    // Convert to lowercase for case-insensitive matching
+    let arg = arg.to_lowercase();
+    
+    match arg.as_str() {
+        // Main mode
+        "m" | "ma" | "mai" | "main" => {
+            info!("Selected Main practice mode from argument '{}'", arg);
+            Some(PracticeMode::Main)
+        },
+        
+        // Dakuten mode
+        "d" | "da" | "dak" | "daku" | "dakuten" => {
+            info!("Selected Dakuten practice mode from argument '{}'", arg);
+            Some(PracticeMode::Dakuten)
+        },
+        
+        // Combination mode
+        "c" | "co" | "com" | "comb" | "combo" | "combination" => {
+            info!("Selected Combination practice mode from argument '{}'", arg);
+            Some(PracticeMode::Combination)
+        },
+        
+        // All mode
+        "a" | "al" | "all" => {
+            info!("Selected All practice mode from argument '{}'", arg);
+            Some(PracticeMode::All)
+        },
+        
+        // No match
+        _ => None
+    }
+}
+
+fn parse_args() -> PracticeMode {
+    let args: Vec<String> = env::args().skip(1).collect();
+    
+    if args.is_empty() {
+        info!("No practice mode specified, defaulting to Main");
+        return PracticeMode::Main;
+    }
+
+    let first_arg = &args[0];
+    
+    match parse_practice_mode(first_arg) {
+        Some(mode) => mode,
+        None => {
+            warn!("Invalid practice mode '{}', defaulting to Main", first_arg);
+            PracticeMode::Main
+        }
+    }
+}
 fn main() -> Result<()> {
     setup_logging()?;
     info!("Starting kana practice application");
@@ -70,6 +126,7 @@ fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = App::new();
+    app.set_practice_mode(parse_args());
     match load_history(&mut app) {
         Ok(_) => info!("Successfully loaded history"),
         Err(e) => warn!("Failed to load history: {}", e),
@@ -157,6 +214,25 @@ fn load_history(app: &mut App) -> Result<()> {
     if Path::new(HISTORY_FILE).exists() {
         let file = File::open(HISTORY_FILE)?;
         app.state.history = serde_json::from_reader(file)?;
+        
+        for (kana, stats) in app.state.history.character_stats.iter_mut() {
+            let stored_ema_response = stats.exp_avg_response;
+            let stored_ema_accuracy = stats.exp_avg_accuracy;
+            
+            stats.recalculate_ema();
+            
+            if (stats.exp_avg_response - stored_ema_response).abs() > 1e-10 ||
+               (stats.exp_avg_accuracy - stored_ema_accuracy).abs() > 1e-10 {
+                warn!(
+                    kana = kana,
+                    stored_response = stored_ema_response,
+                    stored_accuracy = stored_ema_accuracy,
+                    recalculated_response = stats.exp_avg_response,
+                    recalculated_accuracy = stats.exp_avg_accuracy,
+                    "EMA mismatch detected"
+                );
+            }
+        }
     }
     Ok(())
 }

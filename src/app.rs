@@ -29,6 +29,10 @@ impl App {
         }
     }
 
+    pub fn set_practice_mode(&mut self, mode: PracticeMode) {
+        self.state.practice_mode = mode;
+    }
+
     pub fn handle_enter(&mut self) -> Result<()> {
         match self.state.mode {
             AppMode::Initial | AppMode::Paused => {

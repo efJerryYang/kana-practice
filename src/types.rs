@@ -156,6 +156,23 @@ impl CharacterStats {
         self.exp_avg_accuracy
     }
 
+    pub fn recalculate_ema(&mut self) {
+        self.exp_avg_response = 0.0;
+        self.exp_avg_accuracy = 0.0;
+        
+        for (i, entry) in self.test_history.iter().enumerate() {
+            if i == 0 {
+                self.exp_avg_response = entry.duration_ms;
+                self.exp_avg_accuracy = if entry.success { 1.0 } else { 0.0 };
+            } else {
+                self.exp_avg_response = Self::ALPHA * entry.duration_ms + 
+                                      (1.0 - Self::ALPHA) * self.exp_avg_response;
+                self.exp_avg_accuracy = Self::ALPHA * (if entry.success { 1.0 } else { 0.0 }) + 
+                                      (1.0 - Self::ALPHA) * self.exp_avg_accuracy;
+            }
+        }
+    }
+
     pub fn get_recent_avg_response_time(&self, n: usize) -> f64 {
         let recent_tests = self.test_history.iter().rev().take(n);
         let (sum, count) = recent_tests.fold((0.0, 0), |(sum, count), entry| {

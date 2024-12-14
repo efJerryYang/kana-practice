@@ -41,11 +41,3 @@ pub struct UserHistory {
     last_session: DateTime<Utc>,
     total_practice_time: f64,
 }
-
-#[derive(Debug, Clone, Copy)]
-pub enum PracticeMode {
-    Main,
-    Dakuten,
-    Combination,
-    All,
-}
