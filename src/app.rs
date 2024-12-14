@@ -53,6 +53,21 @@ impl App {
         Ok(())
     }
 
+    fn get_current_kana_set(&self) -> &'static [(&'static str, &'static str)] {
+        match self.state.practice_mode {
+            PracticeMode::Main => MAIN_KANA,
+            PracticeMode::Dakuten => DAKUTEN_KANA,
+            PracticeMode::Combination => COMBINATION_KANA,
+            PracticeMode::All => ALL_KANA,
+        }
+    }
+
+    fn is_kana_in_current_mode(&self, kana: &str) -> bool {
+        self.get_current_kana_set()
+            .iter()
+            .any(|(k, _)| *k == kana)
+    }
+
     pub fn select_next_kana(&mut self) -> Result<()> {
         let kana_set: &[(&str, &str)] = match self.state.practice_mode {
             PracticeMode::Main => MAIN_KANA,
@@ -231,15 +246,15 @@ impl App {
     }
     
     fn render_learning_progress(&self, f: &mut Frame, area: Rect) {
-        // Collect all test entries and sort by timestamp
-        let mut all_tests: Vec<(&DateTime<Utc>, f64)> = self.state.history.character_stats.values()
-            .flat_map(|stats| &stats.test_history)
+        let mut all_tests: Vec<(&DateTime<Utc>, f64)> = self.state.history.character_stats
+            .iter()
+            .filter(|(kana, _)| self.is_kana_in_current_mode(kana))
+            .flat_map(|(_, stats)| &stats.test_history)
             .map(|entry| (&entry.start_time, entry.duration_ms))
             .collect();
         all_tests.sort_by_key(|(time, _)| *time);
 
-        // Calculate EMA for each point
-        const ALPHA: f64 = 0.2; // Same alpha as in CharacterStats
+        const ALPHA: f64 = 0.2;
         let mut ema_points: Vec<(f64, f64)> = Vec::new();
         let mut ema = 0.0;
 
@@ -256,13 +271,11 @@ impl App {
             return;
         }
 
-        // Calculate min/max for better scaling
         let mean = ema_points.iter().map(|(_, v)| *v).sum::<f64>() / ema_points.len() as f64;
         let y_min = (mean * 0.5).max(0.0);
         let y_max = mean * 1.5;
         let y_step = (y_max - y_min) / 5.0;
 
-        // Generate axis labels
         let y_labels: Vec<Span> = (0..=5)
             .map(|i| {
                 let value = y_min + y_step * i as f64;
@@ -281,7 +294,6 @@ impl App {
             })
             .collect();
 
-        // Create dataset with smaller dots
         let dataset = Dataset::default()
             .marker(symbols::Marker::Dot)
             .graph_type(GraphType::Line)
@@ -322,12 +334,12 @@ impl App {
 
         // Calculate max items based on available height
         // Account for borders (2) and title (1) and empty line after title (1)
-        let max_display_items = ((area.height as usize).saturating_sub(4))
-            .min(100);  // Cap at 100 items
+        let max_display_items = ((area.height as usize).saturating_sub(4)).min(100);
 
         // Get all stats sorted by EMA accuracy
         let mut recent_stats: Vec<(&String, f64, f64, usize)> = self.state.history.character_stats
             .iter()
+            .filter(|(kana, _)| self.is_kana_in_current_mode(kana))
             .map(|(kana, stats)| {
                 let ema_accuracy = stats.get_ema_accuracy();
                 let ema_response = stats.exp_avg_response;
@@ -378,7 +390,9 @@ impl App {
             Line::from(""),
         ];
 
-        let romaji_to_kana: HashMap<&str, &str> = ALL_KANA.iter()
+        let current_kana_set = self.get_current_kana_set();
+        let romaji_to_kana: HashMap<&str, &str> = current_kana_set
+            .iter()
             .map(|&(kana, romaji)| (romaji, kana))
             .collect();
 
@@ -386,6 +400,10 @@ impl App {
         let mut latest_times: HashMap<String, DateTime<Utc>> = HashMap::new();
 
         for (kana, stats) in &self.state.history.character_stats {
+            if !self.is_kana_in_current_mode(kana) {
+                continue;
+            }
+
             for mistake in &stats.mistakes {
                 let wrong_input = if let Some(wrong_kana) = romaji_to_kana.get(mistake.input.as_str()) {
                     wrong_kana.to_string()
