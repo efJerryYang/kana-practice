@@ -3,21 +3,66 @@ mod error;
 mod types;
 
 use app::App;
-use error::{Result, KanaError};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use error::{KanaError, Result};
 use ratatui::{backend::CrosstermBackend, Terminal};
-use std::{io, time::{Duration, Instant}};
 use std::fs::{File, OpenOptions};
 use std::path::Path;
+use std::{
+    io,
+    time::{Duration, Instant},
+};
 use types::{AppMode, UserHistory};
+
+use tracing::{debug, error, info, warn};
+use tracing_appender::rolling::{RollingFileAppender, Rotation};
+use tracing_subscriber::{fmt::format::FmtSpan, EnvFilter};
+use tracing::Level;
 
 const HISTORY_FILE: &str = "kana_history.json";
 
+fn setup_logging() -> Result<()> {
+    // Set up file appender
+    let file_appender = RollingFileAppender::new(
+        Rotation::DAILY,
+        "logs",
+        "kana_practice.log",
+    );
+
+    // Set different log levels based on build type
+    let env_filter = if cfg!(debug_assertions) {
+        // Debug build - include debug and higher
+        EnvFilter::new("debug")
+    } else {
+        // Release build - include info and higher
+        EnvFilter::new("info")
+    };
+
+    // Initialize subscriber with configured filter
+    tracing_subscriber::fmt()
+        .with_env_filter(env_filter)
+        .with_writer(file_appender)
+        .with_ansi(false)
+        .with_span_events(FmtSpan::CLOSE)
+        .with_target(true)
+        .with_thread_ids(true)
+        .with_line_number(true)
+        .with_file(true)
+        .init();
+
+    info!("Logging system initialized");
+    debug!("Debug logging {}", if cfg!(debug_assertions) { "enabled" } else { "disabled" });
+    
+    Ok(())
+}
 fn main() -> Result<()> {
+    setup_logging()?;
+    info!("Starting kana practice application");
+
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
@@ -25,7 +70,10 @@ fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = App::new();
-    load_history(&mut app)?;
+    match load_history(&mut app) {
+        Ok(_) => info!("Successfully loaded history"),
+        Err(e) => warn!("Failed to load history: {}", e),
+    }
 
     app.select_next_kana()?;
 
@@ -40,12 +88,18 @@ fn main() -> Result<()> {
     )?;
     terminal.show_cursor()?;
 
-    save_history(&app)?;
+    if let Err(e) = save_history(&app) {
+        error!("Failed to save history: {}", e);
+    } else {
+        info!("Successfully saved history");
+    }
 
     if let Err(err) = res {
+        error!("Application error: {}", err);
         println!("Error: {}", err);
     }
 
+    info!("Application terminated");
     Ok(())
 }
 
@@ -70,18 +124,18 @@ fn run_app<B: ratatui::backend::Backend>(
                         if app.state.mode == AppMode::Ready {
                             app.handle_input(c)
                         }
-                    },
+                    }
                     KeyCode::Enter => {
                         app.handle_enter()?;
-                    },
+                    }
                     KeyCode::Backspace => {
                         if app.state.mode == AppMode::Ready {
                             app.state.input_buffer.pop();
                         }
-                    },
+                    }
                     KeyCode::Esc => {
                         app.should_quit = true;
-                    },
+                    }
                     _ => {}
                 }
             }
@@ -113,7 +167,7 @@ fn save_history(app: &App) -> Result<()> {
         .create(true)
         .truncate(true)
         .open(HISTORY_FILE)?;
-    
+
     serde_json::to_writer_pretty(file, &app.state.history)?;
     Ok(())
 }

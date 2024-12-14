@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use tracing::debug;
 use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 
@@ -61,18 +62,60 @@ impl CharacterStats {
     }
 
     pub fn calculate_weight(&self, now: DateTime<Utc>) -> f64 {
+        // Base weight for characters never seen
         if self.appearances == 0 {
-            return 5.0;
+            debug!(
+                appearances = 0,
+                weight = 3.0,
+                "Base weight for unseen character"
+            );
+            return 3.0;  // Maximum possible weight for new characters
         }
         
+        // 1. Error rate component (0-1, higher is better for practice)
+        let error_component = 1.0 - self.exp_avg_accuracy;
+        
+        // 2. Recency component (0-1, higher means needs practice)
+        // Convert to seconds for finer granularity
+        let seconds_since = (now - self.last_appearance).num_seconds() as f64;
+        // Normalize over 1 hour (3600 seconds) with sigmoid function
+        let recency_component = 1.0 / (1.0 + (-0.002 * (seconds_since - 1800.0)).exp());
+        
+        // 3. Response time component (0-1, higher means needs practice)
+        // Using 1200ms as the median response time
+        let response_component = 1.0 / (1.0 + (-0.005 * (self.exp_avg_response - 1200.0)).exp());
+        
+        // Calculate final weight as average of components plus base
+        let components_avg = (error_component + recency_component + response_component) / 3.0;
+        let weight = 1.0 + components_avg;
+
+        debug!(
+            error_component = error_component,
+            recency_component = recency_component,
+            response_component = response_component,
+            seconds_since = seconds_since,
+            exp_avg_accuracy = self.exp_avg_accuracy,
+            exp_avg_response = self.exp_avg_response,
+            components_avg = components_avg,
+            final_weight = weight,
+            appearances = self.appearances,
+            "Weight calculation details"
+        );
+
+        weight
+    }
+
+    pub fn get_weight_components(&self, now: DateTime<Utc>) -> (f64, f64, f64) {
+        if self.appearances == 0 {
+            return (5.0, 0.0, 0.0);
+        }
+
         let hours_since = (now - self.last_appearance).num_hours().min(24) as f64;
         let recency_factor = hours_since / 24.0;
-        
-        let error_rate = 1.0 - self.success_rate();
-        
-        let response_factor = (self.avg_response_time() / 5000.0).min(1.0);
-        
-        1.0 + (error_rate * 3.0) + (response_factor * 0.5) + (recency_factor * 1.0)
+        let error_rate = 1.0 - self.exp_avg_accuracy;
+        let response_factor = (self.exp_avg_response / 5000.0).min(1.0);
+
+        (error_rate * 3.0, response_factor * 0.5, recency_factor * 1.0)
     }
 
     pub fn record_attempt(&mut self, input: &str, success: bool, response_time: f64) {

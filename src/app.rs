@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use crate::error::{Result, KanaError};
 use crate::types::*;
@@ -14,6 +14,7 @@ use ratatui::{
     Frame,
 };
 use rand::distributions::{Distribution, WeightedIndex};
+use tracing::{debug, info, warn};
 
 pub struct App {
     pub state: AppState,
@@ -55,35 +56,67 @@ impl App {
             PracticeMode::Combination => COMBINATION_KANA,
             PracticeMode::All => ALL_KANA,
         };
-    
+
+        info!(
+            practice_mode = ?self.state.practice_mode,
+            kana_set_size = kana_set.len(),
+            "Selecting next kana"
+        );
+
         let now = Utc::now();
         
-        // Calculate weights for each character
-        let weights: Vec<f64> = kana_set
+        let mut weights: Vec<(f64, &str)> = kana_set
             .iter()
             .map(|&(kana, _)| {
                 let stats = self.state.history.character_stats
                     .entry(kana.to_string())
                     .or_insert_with(CharacterStats::new);
                 
-                stats.calculate_weight(now)
+                let weight = stats.calculate_weight(now);
+                
+                debug!(
+                    kana = kana,
+                    weight = weight,
+                    ema_accuracy = stats.exp_avg_accuracy,
+                    ema_response = stats.exp_avg_response,
+                    appearances = stats.appearances,
+                    "Kana weight calculation"
+                );
+                
+                (weight, kana)
             })
             .collect();
-    
-        // Create weighted distribution
-        let dist = WeightedIndex::new(&weights).map_err(|e| KanaError::Terminal(e.to_string()))?;
+
+        weights.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+        debug!(
+            highest_weight = weights.first().map(|(w, k)| format!("{}: {:.3}", k, w)),
+            lowest_weight = weights.last().map(|(w, k)| format!("{}: {:.3}", k, w)),
+            mean_weight = weights.iter().map(|(w, _)| w).sum::<f64>() / weights.len() as f64,
+            "Weight distribution"
+        );
+
+        let (weights_only, _): (Vec<f64>, Vec<&str>) = weights.into_iter().unzip();
+        let dist = WeightedIndex::new(&weights_only)
+            .map_err(|e| KanaError::Terminal(e.to_string()))?;
         let mut rng = rand::thread_rng();
         
-        // Select a character based on weights
         let selected_idx = dist.sample(&mut rng);
         let selected_kana = kana_set[selected_idx];
-    
+
+        info!(
+            selected_kana = selected_kana.0,
+            expected_romaji = selected_kana.1,
+            selected_weight = weights_only[selected_idx],
+            "Selected kana details"
+        );
+
         self.state.current_kana = Some(selected_kana.0.to_string());
         self.state.expected_romaji = Some(selected_kana.1.to_string());
         self.state.start_time = Some(now);
-    
+
         Ok(())
     }
+    
 
     pub fn handle_input(&mut self, c: char) {
         self.state.input_buffer.push(c);
@@ -108,6 +141,17 @@ impl App {
                     .or_insert_with(CharacterStats::new);
                 
                 stats.record_attempt(&input, success, response_time);
+                
+                info!(
+                    kana = kana,
+                    input = input,
+                    expected = expected,
+                    success = success,
+                    response_time = response_time,
+                    ema_accuracy = stats.exp_avg_accuracy,
+                    ema_response = stats.exp_avg_response,
+                    "Answer checked"
+                );
             }
 
             self.state.input_buffer.clear();
@@ -117,6 +161,7 @@ impl App {
 
             Ok(success)
         } else {
+            warn!("Attempted to check answer with missing state");
             Ok(false)
         }
     }
@@ -269,7 +314,12 @@ impl App {
             ])
             .split(area);
 
-        // Use EMA for both response times and accuracy
+        // Calculate max items based on available height
+        // Account for borders (2) and title (1) and empty line after title (1)
+        let max_display_items = ((area.height as usize).saturating_sub(4))
+            .min(100);  // Cap at 100 items
+
+        // Get all stats sorted by EMA accuracy
         let mut recent_stats: Vec<(&String, f64, f64, usize)> = self.state.history.character_stats
             .iter()
             .map(|(kana, stats)| {
@@ -280,11 +330,11 @@ impl App {
             })
             .collect();
 
-        // Sort by EMA accuracy for the correctness column
+        // Render accuracy column
         recent_stats.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
         let correctness_text = Self::render_stats_column(
             "Recent Accuracy (EMA)",
-            &recent_stats[..recent_stats.len().min(15)],
+            &recent_stats[..recent_stats.len().min(max_display_items)],
             true
         );
         f.render_widget(
@@ -293,11 +343,11 @@ impl App {
             chunks[0]
         );
 
-        // Sort by EMA response time for the speed column
+        // Render response time column
         recent_stats.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap());
         let time_text = Self::render_stats_column(
             "Recent Response (EMA)",
-            &recent_stats[..recent_stats.len().min(15)],
+            &recent_stats[..recent_stats.len().min(max_display_items)],
             false
         );
         f.render_widget(
@@ -306,7 +356,8 @@ impl App {
             chunks[1]
         );
 
-        let mistakes_text = self.render_mistakes_column();
+        // Maintain mistakes as a ring buffer of max 100 items
+        let mistakes_text = self.render_mistakes_column(max_display_items);
         f.render_widget(
             Paragraph::new(mistakes_text)
                 .block(Block::default().title("Recent Mistakes").borders(Borders::ALL)),
@@ -314,7 +365,7 @@ impl App {
         );
     }
 
-    fn render_mistakes_column(&self) -> Vec<Line> {
+    fn render_mistakes_column(&self, max_items: usize) -> Vec<Line> {
         let mut text = vec![
             Line::from(vec![
                 Span::styled("Recent Mistakes", Style::default().add_modifier(Modifier::BOLD))
@@ -322,42 +373,38 @@ impl App {
             Line::from(""),
         ];
     
-        // Create a romaji to kana lookup map
-        let romaji_to_kana: HashMap<&str, &str> = MAIN_KANA.iter()
-            .chain(DAKUTEN_KANA.iter())
-            .chain(COMBINATION_KANA.iter())
-            .map(|&(k, r)| (r, k))
-            .collect();
+        let mut mistakes_map: HashMap<String, BTreeSet<String>> = HashMap::new();
+        let mut latest_times: HashMap<String, DateTime<Utc>> = HashMap::new();
     
-        // Group mistakes by kana and track the most recent timestamp
-        let mut mistakes_info: Vec<(String, Vec<String>, DateTime<Utc>)> = 
-            self.state.history.character_stats.iter()
-                .filter(|(_, stats)| !stats.mistakes.is_empty())
-                .map(|(kana, stats)| {
-                    let wrong_kanas: Vec<String> = stats.mistakes.iter()
-                        .filter_map(|m| {
-                            romaji_to_kana.get(m.input.as_str())
-                                .map(|k| k.to_string()).or_else(|| Some(m.input.clone()))
-                        })
-                        .collect();
-                    
-                    // Get the most recent mistake timestamp
-                    let latest_timestamp = stats.mistakes.iter()
-                        .map(|m| m.timestamp)
-                        .max()
-                        .unwrap_or_else(|| Utc::now());
+        for (kana, stats) in &self.state.history.character_stats {
+            for mistake in &stats.mistakes {
+                mistakes_map
+                    .entry(kana.clone())
+                    .or_insert_with(BTreeSet::new)
+                    .insert(mistake.input.clone());
+                
+                latest_times
+                    .entry(kana.clone())
+                    .and_modify(|t| *t = (*t).max(mistake.timestamp))
+                    .or_insert(mistake.timestamp);
+            }
+        }
     
-                    (kana.clone(), wrong_kanas, latest_timestamp)
-                })
+        let mut mistake_entries: Vec<(String, BTreeSet<String>, DateTime<Utc>)> = 
+            mistakes_map.into_iter()
+                .map(|(kana, wrongs)| (
+                    kana.clone(),
+                    wrongs,
+                    latest_times.get(&kana).cloned().unwrap_or_else(Utc::now)
+                ))
                 .collect();
     
-        // Sort by timestamp (most recent first)
-        mistakes_info.sort_by(|a, b| b.2.cmp(&a.2));
+        mistake_entries.sort_by(|a, b| b.2.cmp(&a.2));
     
-        // Display mistakes
-        for (kana, mistakes, _) in mistakes_info.iter().take(15) {
+        for (kana, wrongs, _) in mistake_entries.into_iter().take(max_items) {
+            let wrong_inputs = wrongs.into_iter().collect::<Vec<_>>().join(", ");
             text.push(Line::from(vec![
-                Span::raw(format!("{} → {}", kana, mistakes.join(", ")))
+                Span::raw(format!("{} → {}", kana, wrong_inputs))
             ]));
         }
     
