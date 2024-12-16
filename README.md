@@ -17,3 +17,11 @@ cargo run -- <arg>
 This is the demo for `--daku`:
 
 ![demo-daku](./figures/demo-deku.png)
+
+## Reference Practice Count
+
+After practicing for more than 2500 times, you should be able to type romaji continuously with an average of 1000-1200ms per character shown. This delay has taken into account the time needed for typing and mistakes.
+
+See the records for practicing dekuten kana below:
+
+![demo-daku-long](./figures/demo-deku-long.png)
