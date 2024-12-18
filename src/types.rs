@@ -1,7 +1,9 @@
-use serde::{Deserialize, Serialize};
-use tracing::debug;
-use std::collections::HashMap;
+use crate::kana::*;
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fmt;
+use tracing::debug;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MistakeEntry {
@@ -69,22 +71,22 @@ impl CharacterStats {
                 weight = 3.0,
                 "Base weight for unseen character"
             );
-            return 3.0;  // Maximum possible weight for new characters
+            return 3.0; // Maximum possible weight for new characters
         }
-        
+
         // 1. Error rate component (0-1, higher is better for practice)
         let error_component = 1.0 - self.exp_avg_accuracy;
-        
+
         // 2. Recency component (0-1, higher means needs practice)
         // Convert to seconds for finer granularity
         let seconds_since = (now - self.last_appearance).num_seconds() as f64;
         // Normalize over 1 hour (3600 seconds) with sigmoid function
         let recency_component = 1.0 / (1.0 + (-0.002 * (seconds_since - 1800.0)).exp());
-        
+
         // 3. Response time component (0-1, higher means needs practice)
         // Using 1200ms as the median response time
         let response_component = 1.0 / (1.0 + (-0.005 * (self.exp_avg_response - 1200.0)).exp());
-        
+
         // Calculate final weight as average of components plus base
         let components_avg = (error_component + recency_component + response_component) / 3.0;
         let weight = 1.0 + components_avg;
@@ -115,12 +117,16 @@ impl CharacterStats {
         let error_rate = 1.0 - self.exp_avg_accuracy;
         let response_factor = (self.exp_avg_response / 5000.0).min(1.0);
 
-        (error_rate * 3.0, response_factor * 0.5, recency_factor * 1.0)
+        (
+            error_rate * 3.0,
+            response_factor * 0.5,
+            recency_factor * 1.0,
+        )
     }
 
     pub fn record_attempt(&mut self, input: &str, success: bool, response_time: f64) {
         self.appearances += 1;
-        
+
         if success {
             self.successes += 1;
         } else {
@@ -130,24 +136,24 @@ impl CharacterStats {
                 timestamp: Utc::now(),
             });
         }
-        
+
         self.test_history.push(TestEntry {
             input: input.to_string(),
             start_time: Utc::now() - chrono::Duration::milliseconds(response_time as i64),
             duration_ms: response_time,
             success,
         });
-        
+
         if self.appearances == 1 {
             self.exp_avg_response = response_time;
             self.exp_avg_accuracy = if success { 1.0 } else { 0.0 };
         } else {
-            self.exp_avg_response = Self::ALPHA * response_time + 
-                                  (1.0 - Self::ALPHA) * self.exp_avg_response;
-            self.exp_avg_accuracy = Self::ALPHA * (if success { 1.0 } else { 0.0 }) + 
-                                  (1.0 - Self::ALPHA) * self.exp_avg_accuracy;
+            self.exp_avg_response =
+                Self::ALPHA * response_time + (1.0 - Self::ALPHA) * self.exp_avg_response;
+            self.exp_avg_accuracy = Self::ALPHA * (if success { 1.0 } else { 0.0 })
+                + (1.0 - Self::ALPHA) * self.exp_avg_accuracy;
         }
-        
+
         self.total_response_time += response_time;
         self.last_appearance = Utc::now();
     }
@@ -159,16 +165,16 @@ impl CharacterStats {
     pub fn recalculate_ema(&mut self) {
         self.exp_avg_response = 0.0;
         self.exp_avg_accuracy = 0.0;
-        
+
         for (i, entry) in self.test_history.iter().enumerate() {
             if i == 0 {
                 self.exp_avg_response = entry.duration_ms;
                 self.exp_avg_accuracy = if entry.success { 1.0 } else { 0.0 };
             } else {
-                self.exp_avg_response = Self::ALPHA * entry.duration_ms + 
-                                      (1.0 - Self::ALPHA) * self.exp_avg_response;
-                self.exp_avg_accuracy = Self::ALPHA * (if entry.success { 1.0 } else { 0.0 }) + 
-                                      (1.0 - Self::ALPHA) * self.exp_avg_accuracy;
+                self.exp_avg_response =
+                    Self::ALPHA * entry.duration_ms + (1.0 - Self::ALPHA) * self.exp_avg_response;
+                self.exp_avg_accuracy = Self::ALPHA * (if entry.success { 1.0 } else { 0.0 })
+                    + (1.0 - Self::ALPHA) * self.exp_avg_accuracy;
             }
         }
     }
@@ -178,7 +184,11 @@ impl CharacterStats {
         let (sum, count) = recent_tests.fold((0.0, 0), |(sum, count), entry| {
             (sum + entry.duration_ms, count + 1)
         });
-        if count == 0 { 0.0 } else { sum / count as f64 }
+        if count == 0 {
+            0.0
+        } else {
+            sum / count as f64
+        }
     }
 
     pub fn get_recent_success_rate(&self, n: usize) -> f64 {
@@ -209,6 +219,12 @@ impl Default for UserHistory {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+pub enum KanaType {
+    Hiragana,
+    Katakana,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PracticeMode {
     Main,
     Dakuten,
@@ -216,17 +232,53 @@ pub enum PracticeMode {
     All,
 }
 
+impl fmt::Display for KanaType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            KanaType::Hiragana => write!(f, "hiragana"),
+            KanaType::Katakana => write!(f, "katakana"),
+        }
+    }
+}
+
+impl fmt::Display for PracticeMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PracticeMode::Main => write!(f, "main"),
+            PracticeMode::Dakuten => write!(f, "dakuten"),
+            PracticeMode::Combination => write!(f, "combination"),
+            PracticeMode::All => write!(f, "all"),
+        }
+    }
+}
+
+impl KanaType {
+    pub fn get_practice_set_size(self, mode: PracticeMode) -> usize {
+        match (self, mode) {
+            (KanaType::Hiragana, PracticeMode::Main) => MAIN_HIRAGANA.len(),
+            (KanaType::Hiragana, PracticeMode::Dakuten) => DAKUTEN_HIRAGANA.len(),
+            (KanaType::Hiragana, PracticeMode::Combination) => COMBINATION_HIRAGANA.len(),
+            (KanaType::Hiragana, PracticeMode::All) => ALL_HIRAGANA.len(),
+            (KanaType::Katakana, PracticeMode::Main) => MAIN_KATAKANA.len(),
+            (KanaType::Katakana, PracticeMode::Dakuten) => DAKUTEN_KATAKANA.len(),
+            (KanaType::Katakana, PracticeMode::Combination) => COMBINATION_KATAKANA.len(),
+            (KanaType::Katakana, PracticeMode::All) => ALL_KATAKANA.len(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppMode {
-    Initial,    // First start, waiting for Enter
-    Ready,      // Showing kana, waiting for input
-    Paused,     // User entered empty string, waiting for Enter
+    Initial, // First start, waiting for Enter
+    Ready,   // Showing kana, waiting for input
+    Paused,  // User entered empty string, waiting for Enter
 }
 
 #[derive(Debug)]
 pub struct AppState {
     pub mode: AppMode,
-    pub practice_mode: PracticeMode,  // rename from old 'mode' to be clearer
+    pub practice_mode: PracticeMode,
+    pub kana_type: KanaType,
     pub history: UserHistory,
     pub current_kana: Option<String>,
     pub input_buffer: String,
@@ -239,6 +291,7 @@ impl Default for AppState {
         Self {
             mode: AppMode::Initial,
             practice_mode: PracticeMode::Main,
+            kana_type: KanaType::Hiragana,
             history: UserHistory::default(),
             current_kana: None,
             input_buffer: String::new(),

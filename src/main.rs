@@ -20,15 +20,46 @@ use std::{
     io,
     time::{Duration, Instant},
 };
-use types::{AppMode, PracticeMode, UserHistory};
+use types::{AppMode, KanaType, PracticeMode, UserHistory};
 
 use tracing::{debug, error, info, warn};
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{fmt::format::FmtSpan, EnvFilter};
 
 const HISTORY_FILE: &str = "kana_history.json";
-const VALID_PRACTICE_FLAGS: &[&str] = &["main", "dakuten", "combination"];
+const VALID_PRACTICE_FLAGS: &[&str] = &["main", "dakuten", "combination", "all"];
 const VALID_KANA_FLAGS: &[&str] = &["hiragana", "katakana"];
+
+// Mapping for short flags
+const VALID_SHORT_FLAGS: &[(&str, KanaType, PracticeType)] = &[
+    ("h", KanaType::Hiragana, PracticeType::Main),
+    ("k", KanaType::Katakana, PracticeType::Main),
+    ("m", KanaType::Hiragana, PracticeType::Main),
+    ("d", KanaType::Hiragana, PracticeType::Dakuten),
+    ("c", KanaType::Hiragana, PracticeType::Combination),
+    ("a", KanaType::Hiragana, PracticeType::All),
+];
+
+// Combined flag mappings (e.g., "mh", "mk", etc.)
+const VALID_COMBINED_FLAGS: &[(&str, KanaType, PracticeType)] = &[
+    ("mh", KanaType::Hiragana, PracticeType::Main),
+    ("mk", KanaType::Katakana, PracticeType::Main),
+    ("dh", KanaType::Hiragana, PracticeType::Dakuten),
+    ("dk", KanaType::Katakana, PracticeType::Dakuten),
+    ("ch", KanaType::Hiragana, PracticeType::Combination),
+    ("ck", KanaType::Katakana, PracticeType::Combination),
+    ("ah", KanaType::Hiragana, PracticeType::All),
+    ("ak", KanaType::Katakana, PracticeType::All),
+    // Reverse order
+    ("hm", KanaType::Hiragana, PracticeType::Main),
+    ("km", KanaType::Katakana, PracticeType::Main),
+    ("hd", KanaType::Hiragana, PracticeType::Dakuten),
+    ("kd", KanaType::Katakana, PracticeType::Dakuten),
+    ("hc", KanaType::Hiragana, PracticeType::Combination),
+    ("kc", KanaType::Katakana, PracticeType::Combination),
+    ("ha", KanaType::Hiragana, PracticeType::All),
+    ("ka", KanaType::Katakana, PracticeType::All),
+];
 
 #[derive(Debug)]
 struct CliArgs {
@@ -37,16 +68,11 @@ struct CliArgs {
 }
 
 #[derive(Debug, PartialEq, Copy, Clone)]
-enum KanaType {
-    Hiragana,
-    Katakana,
-}
-
-#[derive(Debug, PartialEq, Copy, Clone)]
 enum PracticeType {
     Main,
     Dakuten,
     Combination,
+    All,
 }
 
 impl Default for CliArgs {
@@ -177,6 +203,7 @@ fn parse_practice_type(arg: &str) -> Option<PracticeType> {
             "main" => Some(PracticeType::Main),
             "dakuten" => Some(PracticeType::Dakuten),
             "combination" => Some(PracticeType::Combination),
+            "all" => Some(PracticeType::All),
             _ => None,
         };
     }
@@ -195,40 +222,18 @@ fn parse_practice_type(arg: &str) -> Option<PracticeType> {
     None
 }
 
-fn parse_combined_flags(flags: &str) -> Option<(Option<PracticeType>, Option<KanaType>)> {
-    if flags.len() != 2 {
-        return None;
-    }
+fn parse_single_short_flag(flag: &str) -> Option<(KanaType, PracticeType)> {
+    VALID_SHORT_FLAGS
+        .iter()
+        .find(|&&(f, _, _)| f == flag)
+        .map(|&(_, kana_type, practice_type)| (kana_type, practice_type))
+}
 
-    let (first, second) = (flags.chars().nth(0)?, flags.chars().nth(1)?);
-
-    const VALID_PRACTICE_CHARS: &[char] = &['m', 'd', 'c'];
-    const VALID_KANA_CHARS: &[char] = &['h', 'k'];
-
-    let try_order = |c1, c2| {
-        // First character must be practice type, second must be kana type
-        if !VALID_PRACTICE_CHARS.contains(&c1) || !VALID_KANA_CHARS.contains(&c2) {
-            return None;
-        }
-
-        let practice = match c1 {
-            'm' => Some(PracticeType::Main),
-            'd' => Some(PracticeType::Dakuten),
-            'c' => Some(PracticeType::Combination),
-            _ => None,
-        };
-
-        let kana = match c2 {
-            'h' => Some(KanaType::Hiragana),
-            'k' => Some(KanaType::Katakana),
-            _ => None,
-        };
-
-        Some((practice, kana))
-    };
-
-    // Try both orderings and return the first valid one
-    try_order(first, second).or_else(|| try_order(second, first))
+fn parse_combined_flags(flags: &str) -> Option<(KanaType, PracticeType)> {
+    VALID_COMBINED_FLAGS
+        .iter()
+        .find(|&&(f, _, _)| f == flags)
+        .map(|&(_, kana_type, practice_type)| (kana_type, practice_type))
 }
 
 fn parse_args() -> Result<CliArgs> {
@@ -255,50 +260,34 @@ fn parse_args() -> Result<CliArgs> {
 
             // Handle single short flag
             if flags.len() == 1 {
-                // Try as kana type
-                if let Some(kana_type) = match flags {
-                    "h" => Some(KanaType::Hiragana),
-                    "k" => Some(KanaType::Katakana),
-                    _ => None,
-                } {
+                if let Some((kana_type, practice_type)) = parse_single_short_flag(flags) {
                     cli_args.kana_type = kana_type;
-                    kana_type_set = true;
-                    continue;
-                }
-                // Try as practice type
-                if let Some(practice_type) = match flags {
-                    "m" => Some(PracticeType::Main),
-                    "d" => Some(PracticeType::Dakuten),
-                    "c" => Some(PracticeType::Combination),
-                    _ => None,
-                } {
                     cli_args.practice_type = practice_type;
+                    kana_type_set = true;
                     practice_type_set = true;
                     continue;
                 }
                 return Err(KanaError::InvalidInput(format!(
-                    "Invalid short flag: '{}'. Valid short flags are: h, k, m, d, c",
-                    flags
+                    "Invalid short flag: '{}'. Valid short flags are: {}",
+                    flags,
+                    VALID_SHORT_FLAGS.iter().map(|(f, _, _)| *f).collect::<Vec<_>>().join(", ")
                 )));
             }
 
             // Handle combined flags
-            if let Some((practice, kana)) = parse_combined_flags(flags) {
-                if let Some(p) = practice {
-                    cli_args.practice_type = p;
-                    practice_type_set = true;
-                }
-                if let Some(k) = kana {
-                    cli_args.kana_type = k;
-                    kana_type_set = true;
-                }
+            if let Some((kana_type, practice_type)) = parse_combined_flags(flags) {
+                cli_args.kana_type = kana_type;
+                cli_args.practice_type = practice_type;
+                kana_type_set = true;
+                practice_type_set = true;
                 continue;
             }
 
             return Err(KanaError::InvalidInput(format!(
-                    "Invalid flag combination: '{}'. Valid combinations are: mh, hm, mk, km, dh, hd, dk, kd, ch, hc, ck, kc",
-                    flags
-                )));
+                "Invalid flag combination: '{}'. Valid combinations are: {}",
+                flags,
+                VALID_COMBINED_FLAGS.iter().map(|(f, _, _)| *f).collect::<Vec<_>>().join(", ")
+            )));
         }
 
         // Handle long flags (--hiragana, --main etc)
@@ -315,25 +304,21 @@ fn parse_args() -> Result<CliArgs> {
         }
 
         // If we get here, the argument is unknown
-        if let Some(suggestion) =
-            find_closest_match(&arg.trim_start_matches('-'), VALID_PRACTICE_FLAGS)
-        {
+        if let Some(suggestion) = find_closest_match(&arg.trim_start_matches('-'), VALID_PRACTICE_FLAGS) {
             return Err(KanaError::InvalidInput(format!(
                 "Unknown argument: '{}'. Did you mean '--{}'?",
                 arg, suggestion
             )));
-        } else if let Some(suggestion) =
-            find_closest_match(&arg.trim_start_matches('-'), VALID_KANA_FLAGS)
-        {
+        } else if let Some(suggestion) = find_closest_match(&arg.trim_start_matches('-'), VALID_KANA_FLAGS) {
             return Err(KanaError::InvalidInput(format!(
                 "Unknown argument: '{}'. Did you mean '--{}'?",
                 arg, suggestion
             )));
         } else {
             return Err(KanaError::InvalidInput(format!(
-                    "Unknown argument: '{}'. Valid options are:\nPractice types: {:?}\nKana types: {:?}",
-                    arg, VALID_PRACTICE_FLAGS, VALID_KANA_FLAGS
-                )));
+                "Unknown argument: '{}'. Valid options are:\nPractice types: {:?}\nKana types: {:?}",
+                arg, VALID_PRACTICE_FLAGS, VALID_KANA_FLAGS
+            )));
         }
     }
 
@@ -345,21 +330,17 @@ fn parse_args() -> Result<CliArgs> {
         "Parsed CLI arguments"
     );
 
-    if cli_args.kana_type == KanaType::Katakana {
-        return Err(KanaError::InvalidInput(
-            "Katakana practice is not yet implemented".to_string(),
-        ));
-    }
-
     Ok(cli_args)
 }
 
-fn convert_to_practice_mode(cli_args: &CliArgs) -> PracticeMode {
-    match cli_args.practice_type {
+fn convert_to_practice_mode(cli_args: &CliArgs) -> (PracticeMode, KanaType) {
+    let practice_mode = match cli_args.practice_type {
         PracticeType::Main => PracticeMode::Main,
         PracticeType::Dakuten => PracticeMode::Dakuten,
         PracticeType::Combination => PracticeMode::Combination,
-    }
+        PracticeType::All => PracticeMode::All,
+    };
+    (practice_mode, cli_args.kana_type)
 }
 
 fn run_app<B: ratatui::backend::Backend>(
@@ -464,7 +445,9 @@ fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = App::new();
-    app.set_practice_mode(convert_to_practice_mode(&cli_args));
+    let (practice_mode, kana_type) = convert_to_practice_mode(&cli_args);
+    app.set_practice_mode(practice_mode);
+    app.set_kana_type(kana_type);
 
     match load_history(&mut app) {
         Ok(_) => info!("Successfully loaded history"),

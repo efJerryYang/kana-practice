@@ -55,12 +55,20 @@ impl App {
     }
 
     fn get_current_kana_set(&self) -> &'static [(&'static str, &'static str)] {
-        match self.state.practice_mode {
-            PracticeMode::Main => &MAIN_KANA,
-            PracticeMode::Dakuten => &DAKUTEN_KANA,
-            PracticeMode::Combination => &COMBINATION_KANA,
-            PracticeMode::All => &ALL_KANA,
+        match (self.state.kana_type, self.state.practice_mode) {
+            (KanaType::Hiragana, PracticeMode::Main) => &MAIN_HIRAGANA,
+            (KanaType::Hiragana, PracticeMode::Dakuten) => &DAKUTEN_HIRAGANA,
+            (KanaType::Hiragana, PracticeMode::Combination) => &COMBINATION_HIRAGANA,
+            (KanaType::Hiragana, PracticeMode::All) => &ALL_HIRAGANA,
+            (KanaType::Katakana, PracticeMode::Main) => &MAIN_KATAKANA,
+            (KanaType::Katakana, PracticeMode::Dakuten) => &DAKUTEN_KATAKANA,
+            (KanaType::Katakana, PracticeMode::Combination) => &COMBINATION_KATAKANA,
+            (KanaType::Katakana, PracticeMode::All) => &ALL_KATAKANA,
         }
+    }
+
+    pub fn set_kana_type(&mut self, kana_type: KanaType) {
+        self.state.kana_type = kana_type;
     }
 
     fn is_kana_in_current_mode(&self, kana: &str) -> bool {
@@ -70,13 +78,7 @@ impl App {
     }
 
     pub fn select_next_kana(&mut self) -> Result<()> {
-        let kana_set: &[(&str, &str)] = match self.state.practice_mode {
-            PracticeMode::Main => &MAIN_KANA,
-            PracticeMode::Dakuten => &DAKUTEN_KANA,
-            PracticeMode::Combination => &COMBINATION_KANA,
-            PracticeMode::All => &ALL_KANA,
-        };
-
+        let kana_set = self.get_current_kana_set();
         let now = Utc::now();
         
         let weights: Vec<(f64, &str)> = kana_set
@@ -90,52 +92,70 @@ impl App {
                 (weight, kana)
             })
             .collect();
-
-        let min_weight = weights.iter().map(|(w, _)| *w).fold(f64::INFINITY, f64::min);
-        let max_weight = weights.iter().map(|(w, _)| *w).fold(f64::NEG_INFINITY, f64::max);
+    
+        // Early return if no kana available (shouldn't happen with proper initialization)
+        if weights.is_empty() {
+            return Err(KanaError::Terminal(
+                "No kana available for current practice mode".to_string()
+            ));
+        }
+    
+        let min_weight = weights.iter()
+            .map(|(w, _)| *w)
+            .fold(f64::INFINITY, f64::min);
+        let max_weight = weights.iter()
+            .map(|(w, _)| *w)
+            .fold(f64::NEG_INFINITY, f64::max);
         let range = max_weight - min_weight;
         
+        // Normalize weights to range [1, 10] to ensure positive weights
         let normalized_weights: Vec<f64> = if range > 0.0 {
             weights.iter().map(|(w, _)| {
-                // Normalize to [1, 10] range to maintain positive weights
                 1.0 + 9.0 * (w - min_weight) / range
             }).collect()
         } else {
             vec![1.0; weights.len()]
         };
-
+    
         debug!(
+            kana_type = ?self.state.kana_type,
+            practice_mode = ?self.state.practice_mode,
+            kana_set_size = kana_set.len(),
             min_weight = min_weight,
             max_weight = max_weight,
             weights_range = range,
             normalized_weights = ?normalized_weights,
-            "Weights normalization"
+            "Weights normalization for kana selection"
         );
-
-        let (weights_only, _): (Vec<f64>, Vec<&str>) = weights.into_iter().unzip();
-        debug!(
-            weights_only = ?weights_only,
-            "Weights only"
-        );
-
+    
         let dist = WeightedIndex::new(&normalized_weights)
-            .map_err(|e| KanaError::Terminal(e.to_string()))?;
+            .map_err(|e| KanaError::Terminal(format!(
+                "Failed to create weighted distribution: {}. Kana set size: {}", 
+                e, kana_set.len()
+            )))?;
         let mut rng = rand::thread_rng();
         
         let selected_idx = dist.sample(&mut rng);
-        let selected_kana = kana_set[selected_idx];
-
+        let (selected_kana, selected_romaji) = kana_set.get(selected_idx)
+            .ok_or_else(|| KanaError::Terminal(format!(
+                "Invalid kana index: {}. Kana set size: {}", 
+                selected_idx, kana_set.len()
+            )))?;
+    
         info!(
-            selected_kana = selected_kana.0,
-            expected_romaji = selected_kana.1,
-            selected_weight = weights_only[selected_idx],
+            kana_type = ?self.state.kana_type,
+            practice_mode = ?self.state.practice_mode,
+            selected_kana = selected_kana,
+            expected_romaji = selected_romaji,
+            kana_set_size = kana_set.len(),
+            selected_weight = weights[selected_idx].0,
             "Selected kana details"
         );
-
-        self.state.current_kana = Some(selected_kana.0.to_string());
-        self.state.expected_romaji = Some(selected_kana.1.to_string());
+    
+        self.state.current_kana = Some(selected_kana.to_string());
+        self.state.expected_romaji = Some(selected_romaji.to_string());
         self.state.start_time = Some(now);
-
+    
         Ok(())
     }
     
