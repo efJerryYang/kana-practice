@@ -1,6 +1,7 @@
 use std::collections::{BTreeSet, HashMap};
 
 use crate::error::{Result, KanaError};
+use crate::kana::{ALL_KANA, COMBINATION_KANA, DAKUTEN_KANA, MAIN_KANA};
 use crate::types::*;
 use chrono::{DateTime, Utc};
 use ratatui::layout::Alignment;

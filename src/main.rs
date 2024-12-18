@@ -1,5 +1,6 @@
 mod app;
 mod error;
+mod kana;
 mod types;
 
 use app::App;
