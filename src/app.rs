@@ -1,7 +1,7 @@
 use std::collections::{BTreeSet, HashMap};
 
 use crate::error::{Result, KanaError};
-use crate::kana::{ALL_KANA, COMBINATION_KANA, DAKUTEN_KANA, MAIN_KANA};
+use crate::kana::*;
 use crate::types::*;
 use chrono::{DateTime, Utc};
 use ratatui::layout::Alignment;
@@ -56,10 +56,10 @@ impl App {
 
     fn get_current_kana_set(&self) -> &'static [(&'static str, &'static str)] {
         match self.state.practice_mode {
-            PracticeMode::Main => MAIN_KANA,
-            PracticeMode::Dakuten => DAKUTEN_KANA,
-            PracticeMode::Combination => COMBINATION_KANA,
-            PracticeMode::All => ALL_KANA,
+            PracticeMode::Main => &MAIN_KANA,
+            PracticeMode::Dakuten => &DAKUTEN_KANA,
+            PracticeMode::Combination => &COMBINATION_KANA,
+            PracticeMode::All => &ALL_KANA,
         }
     }
 
@@ -71,10 +71,10 @@ impl App {
 
     pub fn select_next_kana(&mut self) -> Result<()> {
         let kana_set: &[(&str, &str)] = match self.state.practice_mode {
-            PracticeMode::Main => MAIN_KANA,
-            PracticeMode::Dakuten => DAKUTEN_KANA,
-            PracticeMode::Combination => COMBINATION_KANA,
-            PracticeMode::All => ALL_KANA,
+            PracticeMode::Main => &MAIN_KANA,
+            PracticeMode::Dakuten => &DAKUTEN_KANA,
+            PracticeMode::Combination => &COMBINATION_KANA,
+            PracticeMode::All => &ALL_KANA,
         };
 
         let now = Utc::now();
